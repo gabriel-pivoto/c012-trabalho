@@ -56,6 +56,24 @@
 			font-weight: 700;
 		}
 
+		.controls {
+			margin-top: 12px;
+			display: flex;
+			gap: 8px;
+			flex-wrap: wrap;
+		}
+
+		.controls button {
+			padding: 8px 12px;
+			font-size: 13px;
+		}
+
+		.step-info {
+			margin-top: 8px;
+			font-size: 13px;
+			color: var(--muted);
+		}
+
 		button:disabled {
 			opacity: 0.6;
 			cursor: not-allowed;
@@ -136,6 +154,22 @@
 			text-align: center;
 			color: var(--line-color, #1f6feb);
 			background: #f9fcff;
+			opacity: 0.35;
+			transition: opacity 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+		}
+
+		.stage.done {
+			opacity: 1;
+		}
+
+		.stage.current {
+			opacity: 1;
+			transform: translateY(-2px);
+			box-shadow: 0 6px 16px rgba(31, 111, 235, 0.18);
+		}
+
+		.stage.pending {
+			opacity: 0.35;
 		}
 
 		.connector {
@@ -148,6 +182,11 @@
 			font-size: 12px;
 			font-weight: 700;
 			color: var(--line-color, #1f6feb);
+			opacity: 0.35;
+		}
+
+		.connector-time.done {
+			opacity: 1;
 		}
 
 		.connector-line {
@@ -156,6 +195,11 @@
 			height: 2px;
 			margin-top: 3px;
 			background: var(--line-color, #1f6feb);
+			opacity: 0.35;
+		}
+
+		.connector-line.done {
+			opacity: 1;
 		}
 
 		.connector-line::after {
@@ -217,6 +261,13 @@
 		<h1>Simulacao de Checkout</h1>
 		<p>Fluxo: iniciar simulacao -> API processa -> etapas e resultado visual.</p>
 		<button id="startBtn">Start simulation</button>
+		<div class="controls">
+			<button id="prevStepBtn" disabled>Back step</button>
+			<button id="nextStepBtn" disabled>Next step</button>
+			<button id="playPauseBtn" disabled>Play</button>
+			<button id="resetStepBtn" disabled>Reset</button>
+		</div>
+		<div id="stepInfo" class="step-info">Passo: -</div>
 		<div id="status" class="status">Aguardando inicio.</div>
 
 		<section class="summary">
@@ -244,6 +295,11 @@
 
 	<script>
 		const startBtn = document.getElementById('startBtn');
+		const prevStepBtn = document.getElementById('prevStepBtn');
+		const nextStepBtn = document.getElementById('nextStepBtn');
+		const playPauseBtn = document.getElementById('playPauseBtn');
+		const resetStepBtn = document.getElementById('resetStepBtn');
+		const stepInfoEl = document.getElementById('stepInfo');
 		const statusEl = document.getElementById('status');
 		const estoqueInicialEl = document.getElementById('estoqueInicial');
 		const estoqueFinalEl = document.getElementById('estoqueFinal');
@@ -251,6 +307,11 @@
 		const tempoTotalEl = document.getElementById('tempoTotal');
 		const clientsEl = document.getElementById('clients');
 		const logsEl = document.getElementById('logs');
+
+		let lastData = null;
+		let timeline = [];
+		let currentStepIndex = -1;
+		let autoplayTimer = null;
 
 		function formatSeconds(value) {
 			if (typeof value !== 'number') {
@@ -268,7 +329,74 @@
 			return `${(deltaSeconds * 1000).toFixed(1)}ms`;
 		}
 
-		function renderClients(clientes) {
+		function stageFromEventName(etapa) {
+			if (etapa === 'pagou') {
+				return 1;
+			}
+
+			if (etapa.includes('compra concluida') || etapa.includes('falha')) {
+				return 3;
+			}
+
+			if (etapa.includes('processando') || etapa.includes('verificando') || etapa.includes('aguardando API') || etapa.includes('processado')) {
+				return 2;
+			}
+
+			return 0;
+		}
+
+		function buildTimeline(clientes) {
+			const events = [];
+			const ids = Object.keys(clientes || {});
+
+			for (const id of ids) {
+				const cliente = clientes[id];
+				for (const etapa of (cliente.etapas || [])) {
+					events.push({
+						clienteId: id,
+						clienteNome: cliente.nome || `Cliente ${id}`,
+						etapa: etapa.etapa,
+						tempo_s: etapa.tempo_s,
+					});
+				}
+			}
+
+			events.sort((a, b) => {
+				if (a.tempo_s !== b.tempo_s) {
+					return a.tempo_s - b.tempo_s;
+				}
+				return Number(a.clienteId) - Number(b.clienteId);
+			});
+
+			return events;
+		}
+
+		function buildStateAtStep(clientes, events, stepIndex) {
+			const state = {};
+			for (const id of Object.keys(clientes || {})) {
+				state[id] = {
+					stage: 0,
+					currentStage: 0,
+					lastEvent: '-',
+				};
+			}
+
+			for (let i = 0; i <= stepIndex; i += 1) {
+				const event = events[i];
+				if (!event) {
+					continue;
+				}
+
+				const s = stageFromEventName(event.etapa);
+				state[event.clienteId].stage = Math.max(state[event.clienteId].stage, s);
+				state[event.clienteId].currentStage = s;
+				state[event.clienteId].lastEvent = event.etapa;
+			}
+
+			return state;
+		}
+
+		function renderClients(clientes, stateByClient = {}) {
 			clientsEl.innerHTML = '';
 
 			const ids = Object.keys(clientes || {}).sort((a, b) => Number(a) - Number(b));
@@ -282,6 +410,16 @@
 				const delta2 = (typeof t2 === 'number' && typeof t3 === 'number') ? (t3 - t2) : null;
 				const color = Number(id) % 2 === 0 ? '#dc2626' : '#1f6feb';
 				const estadoFinal = visual.estado_final || 'Completo';
+				const state = stateByClient[id] || { stage: 0, currentStage: 0, lastEvent: '-' };
+
+				const stage1Class = state.stage >= 1 ? (state.currentStage === 1 ? 'current' : 'done') : 'pending';
+				const stage2Class = state.stage >= 2 ? (state.currentStage === 2 ? 'current' : 'done') : 'pending';
+				const stage3Class = state.stage >= 3 ? (state.currentStage === 3 ? 'current' : 'done') : 'pending';
+				const connector1Class = state.stage >= 2 ? 'done' : '';
+				const connector2Class = state.stage >= 3 ? 'done' : '';
+
+				const saldoLabel = state.stage >= 3 ? (cliente.saldo_apos_cliente ?? '-') : '-';
+				const finalLabel = state.stage >= 3 ? estadoFinal : 'Aguardando';
 
 				const card = document.createElement('article');
 				card.className = 'thread-card';
@@ -289,22 +427,22 @@
 				card.innerHTML = `
 					<h3 class="thread-title">
 						<span>${cliente.nome || `Cliente ${id}`}</span>
-						<span class="thread-time">Tempo de processamento: ${formatSeconds(cliente.tempo_processamento_s)}</span>
+						<span class="thread-time">Tempo de processamento: ${formatSeconds(cliente.tempo_processamento_s)} | Ultimo evento: ${state.lastEvent}</span>
 					</h3>
 					<div class="flow">
-						<div class="stage">Fez pedido</div>
+						<div class="stage ${stage1Class}">Fez pedido</div>
 						<div class="connector">
-							<div class="connector-time">${toMs(delta1)}</div>
-							<div class="connector-line"></div>
+							<div class="connector-time ${connector1Class}">${toMs(delta1)}</div>
+							<div class="connector-line ${connector1Class}"></div>
 						</div>
-						<div class="stage">Processando</div>
+						<div class="stage ${stage2Class}">Processando</div>
 						<div class="connector">
-							<div class="connector-time">${toMs(delta2)}</div>
-							<div class="connector-line"></div>
+							<div class="connector-time ${connector2Class}">${toMs(delta2)}</div>
+							<div class="connector-line ${connector2Class}"></div>
 						</div>
-						<div class="stage final">
-							<div>${estadoFinal}</div>
-							<div>Saldo ${cliente.saldo_apos_cliente ?? '-'}</div>
+						<div class="stage final ${stage3Class}">
+							<div>${finalLabel}</div>
+							<div>Saldo ${saldoLabel}</div>
 						</div>
 					</div>
 				`;
@@ -313,11 +451,66 @@
 			}
 		}
 
+		function stopAutoplay() {
+			if (autoplayTimer) {
+				clearInterval(autoplayTimer);
+				autoplayTimer = null;
+			}
+			playPauseBtn.textContent = 'Play';
+		}
+
+		function updateReplayView() {
+			if (!lastData) {
+				return;
+			}
+
+			const state = buildStateAtStep(lastData.clientes || {}, timeline, currentStepIndex);
+			renderClients(lastData.clientes || {}, state);
+
+			if (currentStepIndex < 0) {
+				stepInfoEl.textContent = `Passo: 0/${timeline.length}`;
+				logsEl.textContent = 'Replay pronto. Use Next step para avancar.';
+			} else {
+				const ev = timeline[currentStepIndex];
+				stepInfoEl.textContent = `Passo: ${currentStepIndex + 1}/${timeline.length} | ${ev.clienteNome} -> ${ev.etapa} (${formatSeconds(ev.tempo_s)})`;
+				const executed = timeline.slice(0, currentStepIndex + 1).map((e) => `[${formatSeconds(e.tempo_s)}] ${e.clienteNome}: ${e.etapa}`);
+				logsEl.textContent = executed.join('\n');
+			}
+
+			prevStepBtn.disabled = currentStepIndex <= -1;
+			nextStepBtn.disabled = currentStepIndex >= timeline.length - 1;
+			resetStepBtn.disabled = timeline.length === 0;
+			playPauseBtn.disabled = timeline.length === 0;
+		}
+
+		function goNextStep() {
+			if (currentStepIndex < timeline.length - 1) {
+				currentStepIndex += 1;
+				updateReplayView();
+			}
+
+			if (currentStepIndex >= timeline.length - 1) {
+				stopAutoplay();
+			}
+		}
+
+		function goPrevStep() {
+			if (currentStepIndex > -1) {
+				currentStepIndex -= 1;
+				updateReplayView();
+			}
+		}
+
 		async function startSimulation() {
 			startBtn.disabled = true;
 			statusEl.textContent = 'Processando simulacao via API...';
 			clientsEl.innerHTML = '';
 			logsEl.textContent = '';
+			stepInfoEl.textContent = 'Passo: -';
+			stopAutoplay();
+			timeline = [];
+			currentStepIndex = -1;
+			lastData = null;
 			estoqueInicialEl.textContent = '-';
 			estoqueFinalEl.textContent = '-';
 			raceEl.textContent = '-';
@@ -344,18 +537,53 @@
 				raceEl.textContent = data.race_condition ? 'SIM' : 'NAO';
 				raceEl.className = `value ${data.race_condition ? 'tag-warn' : 'tag-ok'}`;
 
-				renderClients(data.clientes || {});
-				logsEl.textContent = (data.logs || []).join('\n');
-				statusEl.textContent = 'Simulacao concluida.';
+				lastData = data;
+				timeline = buildTimeline(data.clientes || {});
+				currentStepIndex = -1;
+				updateReplayView();
+				statusEl.textContent = 'Simulacao concluida. Use os controles para slow motion.';
 			} catch (error) {
 				statusEl.textContent = 'Erro ao chamar API.';
 				logsEl.textContent = String(error);
+				stopAutoplay();
 			} finally {
 				startBtn.disabled = false;
 			}
 		}
 
 		startBtn.addEventListener('click', startSimulation);
+		prevStepBtn.addEventListener('click', () => {
+			stopAutoplay();
+			goPrevStep();
+		});
+		nextStepBtn.addEventListener('click', () => {
+			stopAutoplay();
+			goNextStep();
+		});
+		resetStepBtn.addEventListener('click', () => {
+			stopAutoplay();
+			currentStepIndex = -1;
+			updateReplayView();
+		});
+		playPauseBtn.addEventListener('click', () => {
+			if (!timeline.length) {
+				return;
+			}
+
+			if (autoplayTimer) {
+				stopAutoplay();
+				return;
+			}
+
+			playPauseBtn.textContent = 'Pause';
+			autoplayTimer = setInterval(() => {
+				if (currentStepIndex >= timeline.length - 1) {
+					stopAutoplay();
+					return;
+				}
+				goNextStep();
+			}, 650);
+		});
 	</script>
 </body>
 </html>

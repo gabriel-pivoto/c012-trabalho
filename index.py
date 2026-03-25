@@ -22,101 +22,75 @@ class Produto:
         self.nome = nome
         self.quantidade_estoque = estoque_inicial
 
-def processar_checkout(cliente_id, produto):
-
-    print(f"Cliente {cliente_id}: Verificando estoque para {produto.nome}...")
-    
-    if produto.quantidade_estoque > 0:
-        # Simula um pequeno atraso no processamento (ex: validação de pagamento)
-        # Isso aumenta a janela de oportunidade para a race condition ocorrer
-        r = tempo_de_checkout()
-        time.sleep(r)
-        
-        print(f"Cliente {cliente_id}: Estoque disponível. Finalizando compra...")
-        produto.quantidade_estoque -= 1
-        print(f"Cliente {cliente_id}: Compra concluída.")
-    else:
-        print(f"Cliente {cliente_id}: Falha na compra. Produto esgotado.")
-
-
-def processar_checkout_com_logs(cliente_id, produto, logs):
-    def registrar(msg):
-        logs.append(msg)
-        print(msg)
-
-    registrar(f"Cliente {cliente_id}: Verificando estoque para {produto.nome}...")
-
-    if produto.quantidade_estoque > 0:
-        r = tempo_de_checkout()
-        registrar(str(r))
-        time.sleep(r)
-
-        registrar(f"Cliente {cliente_id}: Estoque disponivel. Finalizando compra...")
-        produto.quantidade_estoque -= 1
-        registrar(f"Cliente {cliente_id}: Compra concluida.")
-    else:
-        registrar(f"Cliente {cliente_id}: Falha na compra. Produto esgotado.")
-
-
-def processar_checkout_visual(cliente_id, produto, logs, clientes, inicio_simulacao):
+def processar_checkout(cliente_id, produto, inicio_simulacao=None, logs=None, clientes=None):
     cliente_key = str(cliente_id)
+    visual_ativo = inicio_simulacao is not None and logs is not None and clientes is not None
 
-    def registrar_etapa(etapa):
-        tempo = round(time.perf_counter() - inicio_simulacao, 3)
-        clientes[cliente_key]["etapas"].append({"etapa": etapa, "tempo_s": tempo})
-        logs.append(f"[{tempo:.3f}s] Cliente {cliente_id}: {etapa}")
+    def tempo_atual():
+        return round(time.perf_counter() - inicio_simulacao, 3)
 
-        print(f"[{tempo:.3f}s] Cliente {cliente_id}: {etapa}")
+    def registrar(msg, etapa=None):
+        if visual_ativo:
+            tempo = tempo_atual()
+            texto = f"[{tempo:.3f}s] Cliente {cliente_id}: {msg}"
+            logs.append(texto)
+            if etapa is not None:
+                clientes[cliente_key]["etapas"].append({"etapa": etapa, "tempo_s": tempo})
+        else:
+            texto = f"Cliente {cliente_id}: {msg}"
 
-    registrar_etapa("pagou")
-    clientes[cliente_key]["visual"]["fez_pedido_s"] = round(time.perf_counter() - inicio_simulacao, 3)
+        print(texto)
+
+    registrar("pagou", "pagou")
+    if visual_ativo:
+        clientes[cliente_key]["visual"]["fez_pedido_s"] = tempo_atual()
 
     atraso_api = tempo_de_api()
-    registrar_etapa(f"aguardando API ({atraso_api:.3f}s)")
+    registrar(f"aguardando API ({atraso_api:.3f}s)", f"aguardando API ({atraso_api:.3f}s)")
     time.sleep(atraso_api)
 
-    registrar_etapa(f"verificando estoque para {produto.nome}")
+    registrar(f"verificando estoque para {produto.nome}", f"verificando estoque para {produto.nome}")
 
     if produto.quantidade_estoque > 0:
         r = tempo_de_checkout()
-        clientes[cliente_key]["tempo_processamento_s"] = round(r, 3)
-        clientes[cliente_key]["visual"]["processando_s"] = round(time.perf_counter() - inicio_simulacao, 3)
+        if visual_ativo:
+            clientes[cliente_key]["tempo_processamento_s"] = round(r, 3)
+            clientes[cliente_key]["visual"]["processando_s"] = tempo_atual()
 
-        registrar_etapa("processando pagamento")
+        registrar("processando pagamento", "processando pagamento")
         time.sleep(r)
 
-        registrar_etapa("processado")
+        registrar("processado", "processado")
         produto.quantidade_estoque -= 1
-        registrar_etapa("compra concluida")
+        registrar("compra concluida", "compra concluida")
 
-        clientes[cliente_key]["visual"]["final_s"] = round(time.perf_counter() - inicio_simulacao, 3)
-        clientes[cliente_key]["visual"]["estado_final"] = "Completo"
-        clientes[cliente_key]["saldo_apos_cliente"] = produto.quantidade_estoque
+        if visual_ativo:
+            clientes[cliente_key]["visual"]["final_s"] = tempo_atual()
+            clientes[cliente_key]["visual"]["estado_final"] = "Completo"
+            clientes[cliente_key]["saldo_apos_cliente"] = produto.quantidade_estoque
     else:
-        clientes[cliente_key]["tempo_processamento_s"] = 0.0
-        clientes[cliente_key]["visual"]["processando_s"] = round(time.perf_counter() - inicio_simulacao, 3)
+        if visual_ativo:
+            clientes[cliente_key]["tempo_processamento_s"] = 0.0
+            clientes[cliente_key]["visual"]["processando_s"] = tempo_atual()
 
-        registrar_etapa("falha na compra (produto esgotado)")
+        registrar("falha na compra (produto esgotado)", "falha na compra (produto esgotado)")
 
-        clientes[cliente_key]["visual"]["final_s"] = round(time.perf_counter() - inicio_simulacao, 3)
-        clientes[cliente_key]["visual"]["estado_final"] = "Falhou"
-        clientes[cliente_key]["saldo_apos_cliente"] = produto.quantidade_estoque
+        if visual_ativo:
+            clientes[cliente_key]["visual"]["final_s"] = tempo_atual()
+            clientes[cliente_key]["visual"]["estado_final"] = "Falhou"
+            clientes[cliente_key]["saldo_apos_cliente"] = produto.quantidade_estoque
 
 def simular_sistema():
-    # Produto com apenas 1 unidade em estoque
     notebook = Produto(nome="Notebook Gamer", estoque_inicial=1)
-    
-    # Criando threads para 2 clientes simultâneos
+
     thread_cliente_1 = threading.Thread(target=processar_checkout, args=(1, notebook))
     thread_cliente_2 = threading.Thread(target=processar_checkout, args=(2, notebook))
     
     print(f"Estoque inicial: {notebook.quantidade_estoque}\n")
 
-    # Inicia as compras ao mesmo tempo
     thread_cliente_1.start()
     thread_cliente_2.start()
 
-    # Aguarda a finalização das threads
     thread_cliente_1.join()
     thread_cliente_2.join()
 
@@ -161,12 +135,12 @@ def simular_sistema_com_resultado():
     logs.append(f"[0.000s] Estoque inicial: {notebook.quantidade_estoque}")
 
     thread_cliente_1 = threading.Thread(
-        target=processar_checkout_visual,
-        args=(1, notebook, logs, clientes, inicio_simulacao),
+        target=processar_checkout,
+        args=(1, notebook, inicio_simulacao, logs, clientes),
     )
     thread_cliente_2 = threading.Thread(
-        target=processar_checkout_visual,
-        args=(2, notebook, logs, clientes, inicio_simulacao),
+        target=processar_checkout,
+        args=(2, notebook, inicio_simulacao, logs, clientes),
     )
 
     thread_cliente_1.start()
