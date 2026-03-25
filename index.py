@@ -4,6 +4,10 @@ import random
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+ESTOQUE_INICIAL_PADRAO = 1
+QUANTIDADE_CLIENTES_PADRAO = 2
+
+
 def tempo_de_checkout():
     r = random.uniform(0.1, 0.2)
     if random.random() > 0.7:
@@ -21,6 +25,33 @@ class Produto:
     def __init__(self, nome, estoque_inicial):
         self.nome = nome
         self.quantidade_estoque = estoque_inicial
+
+
+def normalizar_quantidade_clientes(valor):
+    try:
+        quantidade = int(valor)
+    except (TypeError, ValueError):
+        raise ValueError("quantidade_clientes deve ser um numero inteiro")
+
+    if quantidade < 1:
+        raise ValueError("quantidade_clientes deve ser maior que zero")
+
+    return quantidade
+
+
+def criar_estado_cliente(cliente_id):
+    return {
+        "nome": f"Cliente {cliente_id}",
+        "tempo_processamento_s": None,
+        "saldo_apos_cliente": None,
+        "etapas": [],
+        "visual": {
+            "fez_pedido_s": None,
+            "processando_s": None,
+            "final_s": None,
+            "estado_final": None,
+        },
+    }
 
 def processar_checkout(cliente_id, produto, inicio_simulacao=None, logs=None, clientes=None):
     cliente_key = str(cliente_id)
@@ -80,74 +111,54 @@ def processar_checkout(cliente_id, produto, inicio_simulacao=None, logs=None, cl
             clientes[cliente_key]["visual"]["estado_final"] = "Falhou"
             clientes[cliente_key]["saldo_apos_cliente"] = produto.quantidade_estoque
 
-def simular_sistema():
-    notebook = Produto(nome="Notebook Gamer", estoque_inicial=1)
+def simular_sistema(quantidade_clientes=QUANTIDADE_CLIENTES_PADRAO):
+    quantidade_clientes = normalizar_quantidade_clientes(quantidade_clientes)
+    notebook = Produto(nome="Notebook Gamer", estoque_inicial=ESTOQUE_INICIAL_PADRAO)
+    threads = [
+        threading.Thread(target=processar_checkout, args=(cliente_id, notebook))
+        for cliente_id in range(1, quantidade_clientes + 1)
+    ]
 
-    thread_cliente_1 = threading.Thread(target=processar_checkout, args=(1, notebook))
-    thread_cliente_2 = threading.Thread(target=processar_checkout, args=(2, notebook))
-    
     print(f"Estoque inicial: {notebook.quantidade_estoque}\n")
 
-    thread_cliente_1.start()
-    thread_cliente_2.start()
+    for thread in threads:
+        thread.start()
 
-    thread_cliente_1.join()
-    thread_cliente_2.join()
+    for thread in threads:
+        thread.join()
 
     print(f"\nEstoque final: {notebook.quantidade_estoque}")
     if notebook.quantidade_estoque < 0:
         print("ERRO: O estoque está negativo! A race condition foi bem-sucedida.")
 
 
-def simular_sistema_com_resultado():
-    notebook = Produto(nome="Notebook Gamer", estoque_inicial=1)
+def simular_sistema_com_resultado(quantidade_clientes=QUANTIDADE_CLIENTES_PADRAO):
+    quantidade_clientes = normalizar_quantidade_clientes(quantidade_clientes)
+    notebook = Produto(nome="Notebook Gamer", estoque_inicial=ESTOQUE_INICIAL_PADRAO)
     logs = []
 
     inicio_simulacao = time.perf_counter()
 
     clientes = {
-        "1": {
-            "nome": "Cliente 1",
-            "tempo_processamento_s": None,
-            "saldo_apos_cliente": None,
-            "etapas": [],
-            "visual": {
-                "fez_pedido_s": None,
-                "processando_s": None,
-                "final_s": None,
-                "estado_final": None,
-            },
-        },
-        "2": {
-            "nome": "Cliente 2",
-            "tempo_processamento_s": None,
-            "saldo_apos_cliente": None,
-            "etapas": [],
-            "visual": {
-                "fez_pedido_s": None,
-                "processando_s": None,
-                "final_s": None,
-                "estado_final": None,
-            },
-        },
+        str(cliente_id): criar_estado_cliente(cliente_id)
+        for cliente_id in range(1, quantidade_clientes + 1)
     }
 
     logs.append(f"[0.000s] Estoque inicial: {notebook.quantidade_estoque}")
 
-    thread_cliente_1 = threading.Thread(
-        target=processar_checkout,
-        args=(1, notebook, inicio_simulacao, logs, clientes),
-    )
-    thread_cliente_2 = threading.Thread(
-        target=processar_checkout,
-        args=(2, notebook, inicio_simulacao, logs, clientes),
-    )
+    threads = [
+        threading.Thread(
+            target=processar_checkout,
+            args=(cliente_id, notebook, inicio_simulacao, logs, clientes),
+        )
+        for cliente_id in range(1, quantidade_clientes + 1)
+    ]
 
-    thread_cliente_1.start()
-    thread_cliente_2.start()
+    for thread in threads:
+        thread.start()
 
-    thread_cliente_1.join()
-    thread_cliente_2.join()
+    for thread in threads:
+        thread.join()
 
     tempo_total = round(time.perf_counter() - inicio_simulacao, 3)
     logs.append(f"[{tempo_total:.3f}s] Estoque final: {notebook.quantidade_estoque}")
@@ -156,7 +167,8 @@ def simular_sistema_com_resultado():
         logs.append("ERRO: O estoque esta negativo! A race condition foi bem-sucedida.")
 
     return {
-        "estoque_inicial": 1,
+        "quantidade_clientes": quantidade_clientes,
+        "estoque_inicial": ESTOQUE_INICIAL_PADRAO,
         "estoque_final": notebook.quantidade_estoque,
         "race_condition": erro_race_condition,
         "tempo_total_s": tempo_total,
@@ -166,6 +178,20 @@ def simular_sistema_com_resultado():
 
 
 class SimulacaoAPIHandler(BaseHTTPRequestHandler):
+    def _ler_payload_json(self):
+        content_length = int(self.headers.get("Content-Length", "0") or 0)
+        if content_length <= 0:
+            return {}
+
+        raw_body = self.rfile.read(content_length)
+        if not raw_body:
+            return {}
+
+        try:
+            return json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("JSON invalido")
+
     def _enviar_json(self, status_code, payload):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status_code)
@@ -189,7 +215,16 @@ class SimulacaoAPIHandler(BaseHTTPRequestHandler):
             self._enviar_json(404, {"erro": "Rota nao encontrada"})
             return
 
-        resultado = simular_sistema_com_resultado()
+        try:
+            payload = self._ler_payload_json()
+            quantidade_clientes = normalizar_quantidade_clientes(
+                payload.get("quantidade_clientes", QUANTIDADE_CLIENTES_PADRAO)
+            )
+        except ValueError as exc:
+            self._enviar_json(400, {"erro": str(exc)})
+            return
+
+        resultado = simular_sistema_com_resultado(quantidade_clientes=quantidade_clientes)
         self._enviar_json(200, resultado)
 
 
@@ -197,6 +232,7 @@ def iniciar_api(host="127.0.0.1", porta=8000):
     servidor = HTTPServer((host, porta), SimulacaoAPIHandler)
     print(f"API iniciada em http://{host}:{porta}")
     print("Endpoint: POST /api/simular")
+    print(f"Payload opcional: {{\"quantidade_clientes\": {QUANTIDADE_CLIENTES_PADRAO}}}")
     servidor.serve_forever()
 
 if __name__ == "__main__":

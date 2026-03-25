@@ -56,6 +56,34 @@
 			font-weight: 700;
 		}
 
+		.toolbar {
+			display: flex;
+			align-items: end;
+			gap: 12px;
+			flex-wrap: wrap;
+		}
+
+		.field {
+			display: grid;
+			gap: 6px;
+			min-width: 170px;
+		}
+
+		.field span {
+			font-size: 12px;
+			font-weight: 700;
+			color: var(--muted);
+		}
+
+		.field input {
+			border: 1px solid var(--border);
+			border-radius: 10px;
+			padding: 10px 12px;
+			font-size: 14px;
+			color: var(--text);
+			background: #fff;
+		}
+
 		.controls {
 			margin-top: 12px;
 			display: flex;
@@ -242,6 +270,14 @@
 				grid-template-columns: repeat(2, minmax(0, 1fr));
 			}
 
+			.toolbar {
+				align-items: stretch;
+			}
+
+			.toolbar > * {
+				width: 100%;
+			}
+
 			.flow {
 				gap: 6px;
 			}
@@ -260,7 +296,13 @@
 	<main class="box">
 		<h1>Simulacao de Checkout</h1>
 		<p>Fluxo: iniciar simulacao -> API processa -> etapas e resultado visual.</p>
-		<button id="startBtn">Start simulation</button>
+		<div class="toolbar">
+			<label class="field" for="clientCountInput">
+				<span>Quantidade de clientes</span>
+				<input id="clientCountInput" type="number" min="1" step="1" value="2">
+			</label>
+			<button id="startBtn">Start simulation</button>
+		</div>
 		<div class="controls">
 			<button id="prevStepBtn" disabled>Back step</button>
 			<button id="nextStepBtn" disabled>Next step</button>
@@ -295,6 +337,7 @@
 
 	<script>
 		const startBtn = document.getElementById('startBtn');
+		const clientCountInput = document.getElementById('clientCountInput');
 		const prevStepBtn = document.getElementById('prevStepBtn');
 		const nextStepBtn = document.getElementById('nextStepBtn');
 		const playPauseBtn = document.getElementById('playPauseBtn');
@@ -312,6 +355,7 @@
 		let timeline = [];
 		let currentStepIndex = -1;
 		let autoplayTimer = null;
+		const clientColors = ['#1f6feb', '#dc2626', '#0f766e', '#b45309', '#0a7a43', '#c2410c', '#475569', '#be123c'];
 
 		function formatSeconds(value) {
 			if (typeof value !== 'number') {
@@ -327,6 +371,23 @@
 			}
 
 			return `${(deltaSeconds * 1000).toFixed(1)}ms`;
+		}
+
+		function getRequestedClientCount() {
+			const parsed = Number.parseInt(clientCountInput.value, 10);
+
+			if (!Number.isInteger(parsed) || parsed < 1) {
+				clientCountInput.value = '2';
+				return 2;
+			}
+
+			clientCountInput.value = String(parsed);
+			return parsed;
+		}
+
+		function getClientColor(clientId) {
+			const index = Number(clientId) - 1;
+			return clientColors[((index % clientColors.length) + clientColors.length) % clientColors.length];
 		}
 
 		function stageFromEventName(etapa) {
@@ -476,7 +537,7 @@
 				const t3 = visual.final_s;
 				const delta1 = (typeof t1 === 'number' && typeof t2 === 'number') ? (t2 - t1) : null;
 				const delta2 = (typeof t2 === 'number' && typeof t3 === 'number') ? (t3 - t2) : null;
-				const color = Number(id) % 2 === 0 ? '#dc2626' : '#1f6feb';
+				const color = getClientColor(id);
 				const estadoFinal = visual.estado_final || 'Completo';
 				const state = stateByClient[id] || { stage: 0, currentStage: 0, lastEvent: '-' };
 
@@ -575,8 +636,10 @@
 		}
 
 		async function startSimulation() {
+			const quantidadeClientes = getRequestedClientCount();
 			startBtn.disabled = true;
-			statusEl.textContent = 'Processando simulacao via API...';
+			clientCountInput.disabled = true;
+			statusEl.textContent = `Processando simulacao via API para ${quantidadeClientes} cliente(s)...`;
 			clientsEl.innerHTML = '';
 			logsEl.textContent = '';
 			stepInfoEl.textContent = 'Passo: -';
@@ -598,7 +661,10 @@
 					headers: {
 						'Content-Type': 'application/json'
 					},
-					body: JSON.stringify({ iniciar: true })
+					body: JSON.stringify({
+						iniciar: true,
+						quantidade_clientes: quantidadeClientes
+					})
 				});
 
 				if (!response.ok) {
@@ -611,13 +677,14 @@
 				timeline = buildTimeline(data.clientes || {});
 				currentStepIndex = -1;
 				updateReplayView();
-				statusEl.textContent = 'Simulacao concluida. Use os controles para slow motion.';
+				statusEl.textContent = `Simulacao concluida para ${data.quantidade_clientes || quantidadeClientes} cliente(s). Use os controles para slow motion.`;
 			} catch (error) {
 				statusEl.textContent = 'Erro ao chamar API.';
 				logsEl.textContent = String(error);
 				stopAutoplay();
 			} finally {
 				startBtn.disabled = false;
+				clientCountInput.disabled = false;
 			}
 		}
 
