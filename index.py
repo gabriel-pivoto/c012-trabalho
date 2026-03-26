@@ -9,16 +9,16 @@ QUANTIDADE_CLIENTES_PADRAO = 2
 
 
 def tempo_de_checkout():
-    r = random.uniform(0.1, 0.2)
-    if random.random() > 0.7:
+    r = random.uniform(0.01, 0.02)
+    if random.random() > 0.5:
         r += 0.3
     return r
 
 
 def tempo_de_api():
     r = random.uniform(0.03, 0.08)
-    if random.random() > 0.7:
-        r += 0.01
+    if random.random() > 0.5:
+        r += 0.3
     return r
 
 class Produto:
